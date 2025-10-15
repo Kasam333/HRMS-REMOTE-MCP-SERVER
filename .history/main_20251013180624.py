@@ -1,0 +1,88 @@
+import random
+from fastmcp import FastMCP
+import psycopg2 # type: ignore
+import base64, io
+
+# @mcp.tool
+# def roll_dice(n_dice: int = 1) -> list[int]:
+#     return [random.randint(1,6) for _ in range(n_dice)]
+
+DB_CONFIG = {
+    "dbname": 'HRMS1',
+    "user": 'openpg',
+    "password": 'openpgpwd',
+    "host": 'localhost',
+    "port": '5432'
+}
+
+def get_connection():
+    return psycopg2.connect(**DB_CONFIG)
+
+mcp = FastMCP(name="HRMS Server")
+
+def get_user_groups(employee_id: int) -> list[str]:
+    conn = get_connection()
+    cur = conn.cursor()
+    
+    try:
+        cur.execute("SELECT user_id FROM hr_employee WHERE id = %s", (employee_id,))
+        result = cur.fetchone()
+        if not result or not result[0]:
+            return []
+        
+        user_id = result[0]
+        
+        cur.execute("""
+                    SELECT g.name
+                    FROM res_groups g
+                    JOIN res_groups_users_rel r ON g.id = r.gid
+                    WHERE r.uid = %s
+                    """, (user_id,))
+        
+        rows = cur.fetchall()
+        
+        groups = []
+        for row in rows:
+            group_name = row[0]
+            # Handle if it's a dict, None, etc.
+            if isinstance(group_name, dict):
+                # Try to get 'name' key if dict
+                group_name = group_name.get("name", "")
+            if isinstance(group_name, str):
+                groups.append(group_name.strip().lower())
+                
+        return groups
+    
+    finally:
+        cur.close()
+        conn.close()
+
+#Tools
+
+@mcp.tool()
+def list_employees(employee_id: int) -> list[dict]:
+    
+    user_groups= get_user_groups(employee_id)
+    
+    allowed_groups = {"group_attendance_admin"}
+    
+    if not any(group in allowed_groups for group in user_groups):
+        return [{"error": "Access denied. Only Admin users can view the employee list."}]
+    
+    conn = get_connection()
+    cur = conn.cursor()
+    cur.execute("""
+                SELECT e.id, e.name, d.name AS department
+                FROM hr_employee e
+                LEFT JOIN hr_department d ON e.department_id = d.id
+                ORDER BY e.id
+                """)
+    rows = cur.fetchall()
+    cur.close()
+    conn.close()
+    
+    return [{"id": r[0], "name": r[1], "department":r[2]} for r in rows]
+
+
+if __name__ == "__main__":
+    mcp.run()
